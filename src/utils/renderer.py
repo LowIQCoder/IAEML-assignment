@@ -18,6 +18,13 @@ BLUE = (50, 50, 200)
 GREEN = (50, 200, 50)
 YELLOW = (200, 200, 50)
 
+# Car
+CAR_LENGTH = 80
+CAR_WIDTH = 40
+WHEELBASE = 60
+STERING_RATE = math.radians(10)
+ACCELERATION = 0.2
+
 # TODO: draw time
 
 class PygameFrontend:
@@ -30,7 +37,7 @@ class PygameFrontend:
         self.agent_fn = agent_fn
 
         h, w = int(env_params.map_height_width[0]), int(env_params.map_height_width[1])
-        self.CELL_SIZE = 40  # pixels per map unit
+        self.CELL_SIZE = 80  # pixels per map unit
         self.screen = pygame.display.set_mode((w * self.CELL_SIZE, h * self.CELL_SIZE))
         pygame.display.set_caption("2D Env Renderer")
 
@@ -144,6 +151,45 @@ class PygameFrontend:
             screen.blit(text_surf, (x, y))
             y += line_height
 
+    def draw_agent(self, agent_pos, theta, phi):
+        # --- Compute axle positions ---
+        y, x = (int((agent_pos[0] + 0.7) * self.CELL_SIZE), int((agent_pos[1] + 0.5) * self.CELL_SIZE))
+        rear_axle = (x, y)
+        front_axle = (
+            x + WHEELBASE * math.cos(theta),
+            y + WHEELBASE * math.sin(theta)
+        )
+
+        # Draw rear axle (black line)
+        rear_left = (
+            rear_axle[0] - (CAR_WIDTH / 2) * math.sin(theta),
+            rear_axle[1] + (CAR_WIDTH / 2) * math.cos(theta)
+        )
+        rear_right = (
+            rear_axle[0] + (CAR_WIDTH / 2) * math.sin(theta),
+            rear_axle[1] - (CAR_WIDTH / 2) * math.cos(theta)
+        )
+        pygame.draw.line(self.screen, (0, 0, 0), rear_left, rear_right, 4)
+
+        # Draw front axle (red line, steered by phi)
+        front_left = (
+            front_axle[0] - (CAR_WIDTH / 2) * math.sin(theta + phi),
+            front_axle[1] + (CAR_WIDTH / 2) * math.cos(theta + phi)
+        )
+        front_right = (
+            front_axle[0] + (CAR_WIDTH / 2) * math.sin(theta + phi),
+            front_axle[1] - (CAR_WIDTH / 2) * math.cos(theta + phi)
+        )
+        pygame.draw.line(self.screen, (200, 0, 0), front_left, front_right, 4)
+
+        # Draw body (connecting axles)
+        pygame.draw.line(self.screen, (50, 50, 200), rear_axle, front_axle, 3)
+
+        # Draw wheel center points
+        pygame.draw.circle(self.screen, (0, 0, 0), (int(rear_axle[0]), int(rear_axle[1])), 4)
+        pygame.draw.circle(self.screen, (200, 0, 0), (int(front_axle[0]), int(front_axle[1])), 4)
+    
+
     def draw(self):
         self.screen.fill(WHITE)
 
@@ -154,9 +200,7 @@ class PygameFrontend:
 
         agent_pos = self.rotate_to_map_vmap(jnp.atleast_2d(self.state.agent_pos))[0]
         goal_pos = self.rotate_to_map_vmap(jnp.atleast_2d(self.state.goal_pos))[0]
-        agent_forward_dir = jnp.flip(self.state.agent_forward_dir) * jnp.array([-1, 1])
         rays = jnp.flip(self.obs.collision_rays, axis=-1) * jnp.array([-1, 1])[None, :]
-        # print("FLIPPED rays", rays.shape)
 
         # draw path
         self.draw_path(path_array, agent_pos)
@@ -191,21 +235,8 @@ class PygameFrontend:
         # draw rays after obstacles
         self.draw_rays_transparent(self.screen, agent_pos, rays, self.CELL_SIZE)
         
-        # Draw agent
-        y, x = agent_pos
-        center_px = (int((x + 0.5) * self.CELL_SIZE), int((y + 0.5) * self.CELL_SIZE))
-        pygame.draw.circle(self.screen, BLUE, center_px, self.AGENT_RADIUS_PX)
-
-        
-        # Draw agent facing direction
-        dir_vec = agent_forward_dir
-        norm = math.sqrt(dir_vec[0] ** 2 + dir_vec[1] ** 2) + 1e-6
-        dir_vec_px = (
-            int(dir_vec[1] / norm * self.AGENT_RADIUS_PX),
-            int(dir_vec[0] / norm * self.AGENT_RADIUS_PX),
-        )
-        end_pos = (center_px[0] + dir_vec_px[0], center_px[1] + dir_vec_px[1])
-        pygame.draw.line(self.screen, YELLOW, center_px, end_pos, 3)
+        # Draw agent      
+        self.draw_agent(agent_pos, -self.state.theta, self.state.phi)
         
         # Draw info
         self.draw_info(self.screen, self.info) 
@@ -214,19 +245,18 @@ class PygameFrontend:
 
     def handle_keys(self):
         keys = pygame.key.get_pressed()
-        action = jnp.array([0.0, 0.0], dtype=jnp.float32)
-        if keys[pygame.K_UP] or keys[pygame.K_w]:
-            action += jnp.array([0, 1])
-        if keys[pygame.K_DOWN] or keys[pygame.K_s]:
-            action += jnp.array([0, -1])
-        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
-            action += jnp.array([-1, 0])
-        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
-            action += jnp.array([1, 0])
+        dv = 0
+        dphi = 0
+        if keys[pygame.K_UP]:
+            dv = ACCELERATION
+        if keys[pygame.K_DOWN]:
+            dv = -ACCELERATION
+        if keys[pygame.K_LEFT]:
+            dphi = -STERING_RATE
+        if keys[pygame.K_RIGHT]:
+            dphi = STERING_RATE
 
-        action = (
-            action / jnp.linalg.norm(action) if jnp.any(jnp.abs(action) > 0) else action
-        )
+        action = jnp.array([dv, dphi], dtype=jnp.float32)
         return action
 
     def run(self):
